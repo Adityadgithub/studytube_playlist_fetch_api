@@ -1,8 +1,10 @@
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 import yt_dlp
+
+CommentSort = Literal["top", "new"]
 
 
 def extract_video_id(video_id_or_url: str) -> str:
@@ -16,6 +18,13 @@ def extract_video_id(video_id_or_url: str) -> str:
     if re.fullmatch(r"[a-zA-Z0-9_-]{11}", text):
         return text
     return text
+
+
+def normalize_sort(sort: str | None) -> CommentSort:
+    value = (sort or "top").lower().strip()
+    if value in {"top", "likes", "popular", "top_comments"}:
+        return "top"
+    return "new"
 
 
 def _format_timestamp(ts: Any) -> str | None:
@@ -74,37 +83,32 @@ def _attach_replies(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _fetch_top_level_comments(
     url: str,
     needed_top_level: int,
+    sort: CommentSort,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Fetch enough yt-dlp comments to cover `needed_top_level` top-level items."""
-    fetch_max = min(max(needed_top_level * 3, 20), 200)
-    info: dict[str, Any] = {}
-    top_level: list[dict[str, Any]] = []
+    """Fetch top-level comments using YouTube's sort (top / newest)."""
+    # max_comments format: total, parents, replies, replies-per-thread
+    parent_cap = min(max(needed_top_level, 1), 200)
+    max_spec = f"all,{parent_cap},all,all"
 
-    while fetch_max <= 200:
-        opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "getcomments": True,
-            "extractor_args": {"youtube": {"max_comments": [str(fetch_max)]}},
-        }
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "getcomments": True,
+        "extractor_args": {
+            "youtube": {
+                "comment_sort": [sort],
+                "max_comments": [max_spec],
+            }
+        },
+    }
 
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
 
-        raw_comments = info.get("comments") or []
-        normalized = [_normalize_comment(c) for c in raw_comments if c]
-        top_level = _attach_replies(normalized)
-
-        if len(top_level) >= needed_top_level:
-            break
-        if len(raw_comments) < fetch_max:
-            break
-        if fetch_max >= 200:
-            break
-
-        fetch_max = min(fetch_max + needed_top_level * 2, 200)
-
+    raw_comments = info.get("comments") or []
+    normalized = [_normalize_comment(c) for c in raw_comments if c]
+    top_level = _attach_replies(normalized)
     return top_level, info
 
 
@@ -112,6 +116,7 @@ def fetch_comments(
     video_id_or_url: str,
     offset: int = 0,
     limit: int = 10,
+    sort: str | None = "top",
     max_comments: int | None = None,
 ) -> dict[str, Any]:
     video_id = extract_video_id(video_id_or_url)
@@ -123,13 +128,13 @@ def fetch_comments(
 
     offset = max(0, offset)
     limit = max(1, min(limit, 50))
+    comment_sort = normalize_sort(sort)
 
-    # Backwards compatibility for older clients using `max` only.
     if max_comments is not None and offset == 0 and limit == 10:
         limit = max(1, min(max_comments, 50))
 
     needed = offset + limit + 1
-    top_level, info = _fetch_top_level_comments(url, needed)
+    top_level, info = _fetch_top_level_comments(url, needed, comment_sort)
 
     page = top_level[offset : offset + limit]
     has_more = len(top_level) > offset + limit
@@ -138,6 +143,7 @@ def fetch_comments(
         "videoId": video_id,
         "title": info.get("title") or "",
         "channel": info.get("uploader") or info.get("channel") or "Unknown",
+        "sort": comment_sort,
         "offset": offset,
         "limit": limit,
         "commentCount": info.get("comment_count") or len(top_level),

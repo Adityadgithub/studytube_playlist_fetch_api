@@ -62,6 +62,10 @@ def get_comments_by_id(
     video_id: str,
     offset: int = Query(0, ge=0, description="Number of top-level comments to skip"),
     limit: int = Query(10, ge=1, le=50, description="Comments per page"),
+    sort: str = Query(
+        "top",
+        description="Comment sort: top (most liked) or new (newest first)",
+    ),
     max: int | None = Query(
         None,
         ge=1,
@@ -72,7 +76,13 @@ def get_comments_by_id(
 ):
     _check_api_key(x_api_key)
     try:
-        return fetch_comments(video_id, offset=offset, limit=limit, max_comments=max)
+        return fetch_comments(
+            video_id,
+            offset=offset,
+            limit=limit,
+            sort=sort,
+            max_comments=max,
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -82,6 +92,10 @@ def get_comments_by_query(
     v: str = Query(..., description="Video ID or full YouTube URL"),
     offset: int = Query(0, ge=0, description="Number of top-level comments to skip"),
     limit: int = Query(10, ge=1, le=50, description="Comments per page"),
+    sort: str = Query(
+        "top",
+        description="Comment sort: top (most liked) or new (newest first)",
+    ),
     max: int | None = Query(
         None,
         ge=1,
@@ -92,6 +106,12 @@ def get_comments_by_query(
 ):
     _check_api_key(x_api_key)
     try:
-        return fetch_comments(v, offset=offset, limit=limit, max_comments=max)
+        return fetch_comments(
+            v,
+            offset=offset,
+            limit=limit,
+            sort=sort,
+            max_comments=max,
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
