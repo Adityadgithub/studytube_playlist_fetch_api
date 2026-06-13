@@ -27,6 +27,8 @@ def _fetch_video_upload_date(video_url: str) -> str | None:
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
+        "ignore_no_formats_error": True,
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -34,7 +36,8 @@ def _fetch_video_upload_date(video_url: str) -> str | None:
         return _format_upload_date(
             info.get("upload_date") or info.get("release_date")
         )
-    except Exception:
+    except Exception as exc:
+        print(f"upload_date fetch failed for {video_url}: {exc}")
         return None
 
 
@@ -77,6 +80,8 @@ def fetch_playlist(playlist_id_or_url: str) -> dict[str, Any]:
         "no_warnings": True,
         "extract_flat": "in_playlist",
         "skip_download": True,
+        "ignore_no_formats_error": True,
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
 
     with yt_dlp.YoutubeDL(opts) as ydl:
