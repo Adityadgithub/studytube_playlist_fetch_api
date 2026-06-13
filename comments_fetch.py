@@ -1,10 +1,16 @@
 import re
+import time
 from datetime import datetime, timezone
+from threading import Lock
 from typing import Any, Literal
 
 import yt_dlp
 
 CommentSort = Literal["top", "new"]
+
+_CACHE_TTL_SECONDS = 20 * 60
+_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+_CACHE_LOCK = Lock()
 
 
 def extract_video_id(video_id_or_url: str) -> str:
@@ -44,6 +50,10 @@ def _normalize_comment(raw: dict[str, Any]) -> dict[str, Any]:
     parent = raw.get("parent")
     parent_id = None if parent in (None, "root") else str(parent)
 
+    reply_count = raw.get("reply_count")
+    if reply_count is None:
+        reply_count = 0
+
     return {
         "id": str(raw.get("id") or ""),
         "parentId": parent_id,
@@ -60,6 +70,7 @@ def _normalize_comment(raw: dict[str, Any]) -> dict[str, Any]:
         "authorIsUploader": bool(raw.get("author_is_uploader")),
         "authorIsVerified": bool(raw.get("author_is_verified")),
         "replies": [],
+        "_replyCountHint": int(reply_count) if reply_count else 0,
     }
 
 
@@ -75,21 +86,18 @@ def _attach_replies(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
             top_level.append(comment)
 
     for comment in top_level:
-        comment["replyCount"] = len(comment.get("replies") or [])
+        nested = len(comment.get("replies") or [])
+        hint = int(comment.pop("_replyCountHint", 0) or 0)
+        comment["replyCount"] = max(nested, hint)
 
     return top_level
 
 
 def _fetch_top_level_comments(
     url: str,
-    needed_top_level: int,
     sort: CommentSort,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Fetch top-level comments using YouTube's sort (top / newest)."""
-    # max_comments format: total, parents, replies, replies-per-thread
-    parent_cap = min(max(needed_top_level, 1), 200)
-    max_spec = f"all,{parent_cap},all,all"
-
+    """Fetch comments once. yt-dlp may still download many threads (~30-60s)."""
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -98,7 +106,8 @@ def _fetch_top_level_comments(
         "extractor_args": {
             "youtube": {
                 "comment_sort": [sort],
-                "max_comments": [max_spec],
+                # Limit replies during fetch — top-level list is what we paginate.
+                "max_comments": ["all,all,0,0"],
             }
         },
     }
@@ -110,6 +119,37 @@ def _fetch_top_level_comments(
     normalized = [_normalize_comment(c) for c in raw_comments if c]
     top_level = _attach_replies(normalized)
     return top_level, info
+
+
+def _get_cached_entry(video_id: str, sort: CommentSort) -> dict[str, Any] | None:
+    key = (video_id, sort)
+    with _CACHE_LOCK:
+        entry = _CACHE.get(key)
+        if not entry:
+            return None
+        if time.time() - entry["fetched_at"] > _CACHE_TTL_SECONDS:
+            del _CACHE[key]
+            return None
+        return entry
+
+
+def _load_comments(video_id: str, url: str, sort: CommentSort) -> dict[str, Any]:
+    cached = _get_cached_entry(video_id, sort)
+    if cached is not None:
+        cached["cached"] = True
+        return cached
+
+    top_level, info = _fetch_top_level_comments(url, sort)
+    entry = {
+        "top_level": top_level,
+        "info": info,
+        "fetched_at": time.time(),
+        "cached": False,
+    }
+    key = (video_id, sort)
+    with _CACHE_LOCK:
+        _CACHE[key] = entry
+    return entry
 
 
 def fetch_comments(
@@ -133,8 +173,9 @@ def fetch_comments(
     if max_comments is not None and offset == 0 and limit == 10:
         limit = max(1, min(max_comments, 50))
 
-    needed = offset + limit + 1
-    top_level, info = _fetch_top_level_comments(url, needed, comment_sort)
+    loaded = _load_comments(video_id, url, comment_sort)
+    top_level: list[dict[str, Any]] = loaded["top_level"]
+    info: dict[str, Any] = loaded["info"]
 
     page = top_level[offset : offset + limit]
     has_more = len(top_level) > offset + limit
@@ -150,5 +191,13 @@ def fetch_comments(
         "returnedCount": len(page),
         "hasMore": has_more,
         "totalFetched": len(top_level),
+        "cached": loaded.get("cached", False),
         "comments": page,
     }
+
+
+def clear_comment_cache() -> int:
+    with _CACHE_LOCK:
+        count = len(_CACHE)
+        _CACHE.clear()
+        return count
