@@ -60,12 +60,19 @@ def get_playlist_by_query(
 @app.get("/comments/{video_id}")
 def get_comments_by_id(
     video_id: str,
-    max: int = Query(50, ge=1, le=200, description="Max comments to fetch"),
+    offset: int = Query(0, ge=0, description="Number of top-level comments to skip"),
+    limit: int = Query(10, ge=1, le=50, description="Comments per page"),
+    max: int | None = Query(
+        None,
+        ge=1,
+        le=200,
+        description="Deprecated — use limit instead",
+    ),
     x_api_key: str | None = Header(default=None),
 ):
     _check_api_key(x_api_key)
     try:
-        return fetch_comments(video_id, max_comments=max)
+        return fetch_comments(video_id, offset=offset, limit=limit, max_comments=max)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -73,11 +80,18 @@ def get_comments_by_id(
 @app.get("/comments")
 def get_comments_by_query(
     v: str = Query(..., description="Video ID or full YouTube URL"),
-    max: int = Query(50, ge=1, le=200, description="Max comments to fetch"),
+    offset: int = Query(0, ge=0, description="Number of top-level comments to skip"),
+    limit: int = Query(10, ge=1, le=50, description="Comments per page"),
+    max: int | None = Query(
+        None,
+        ge=1,
+        le=200,
+        description="Deprecated — use limit instead",
+    ),
     x_api_key: str | None = Header(default=None),
 ):
     _check_api_key(x_api_key)
     try:
-        return fetch_comments(v, max_comments=max)
+        return fetch_comments(v, offset=offset, limit=limit, max_comments=max)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
