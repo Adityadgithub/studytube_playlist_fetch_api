@@ -1,5 +1,4 @@
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import yt_dlp
@@ -22,42 +21,6 @@ def _format_upload_date(upload_date: Any) -> str | None:
     return text
 
 
-def _fetch_video_upload_date(video_url: str) -> str | None:
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "ignore_no_formats_error": True,
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
-    }
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(video_url, download=False)
-        return _format_upload_date(
-            info.get("upload_date") or info.get("release_date")
-        )
-    except Exception as exc:
-        print(f"upload_date fetch failed for {video_url}: {exc}")
-        return None
-
-
-def _enrich_upload_dates(videos: list[dict[str, Any]], max_workers: int = 6) -> None:
-    missing = [i for i, v in enumerate(videos) if not v.get("uploadDateRaw")]
-    if not missing:
-        return
-
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(_fetch_video_upload_date, videos[i]["url"]): i
-            for i in missing
-        }
-        for future in as_completed(futures):
-            idx = futures[future]
-            upload_date = future.result()
-            if upload_date:
-                videos[idx]["uploadDateRaw"] = upload_date
-
-
 def _normalize_author(name: str | None) -> str:
     if not name:
         return "Unknown"
@@ -75,11 +38,13 @@ def fetch_playlist(playlist_id_or_url: str) -> dict[str, Any]:
         else f"https://www.youtube.com/playlist?list={playlist_id}"
     )
 
+    # Full metadata in one call (includes upload_date). Slower than extract_flat.
     opts = {
         "quiet": True,
         "no_warnings": True,
-        "extract_flat": "in_playlist",
         "skip_download": True,
+        "socket_timeout": 15,
+        "ignoreerrors": True,
         "ignore_no_formats_error": True,
         "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
@@ -124,8 +89,6 @@ def fetch_playlist(playlist_id_or_url: str) -> dict[str, Any]:
 
     if not videos:
         raise ValueError("No videos found in playlist")
-
-    _enrich_upload_dates(videos)
 
     return {
         "id": playlist_id,
