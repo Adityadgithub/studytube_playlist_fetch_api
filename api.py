@@ -36,11 +36,15 @@ def health():
 @app.get("/playlist/{playlist_id}")
 def get_playlist_by_id(
     playlist_id: str,
+    enrich_dates: bool = Query(
+        False,
+        description="Fetch upload dates per video (slow for large playlists)",
+    ),
     x_api_key: str | None = Header(default=None),
 ):
     _check_api_key(x_api_key)
     try:
-        return fetch_playlist(playlist_id)
+        return fetch_playlist(playlist_id, enrich_dates=enrich_dates)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -48,11 +52,15 @@ def get_playlist_by_id(
 @app.get("/playlist")
 def get_playlist_by_query(
     list: str = Query(..., description="Playlist ID or full playlist URL"),
+    enrich_dates: bool = Query(
+        False,
+        description="Fetch upload dates per video (slow for large playlists)",
+    ),
     x_api_key: str | None = Header(default=None),
 ):
     _check_api_key(x_api_key)
     try:
-        return fetch_playlist(list)
+        return fetch_playlist(list, enrich_dates=enrich_dates)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

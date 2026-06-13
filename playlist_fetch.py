@@ -67,7 +67,11 @@ def _normalize_author(name: str | None) -> str:
     return trimmed
 
 
-def fetch_playlist(playlist_id_or_url: str) -> dict[str, Any]:
+def fetch_playlist(
+    playlist_id_or_url: str,
+    *,
+    enrich_dates: bool = False,
+) -> dict[str, Any]:
     playlist_id = extract_playlist_id(playlist_id_or_url)
     url = (
         playlist_id_or_url
@@ -96,7 +100,7 @@ def fetch_playlist(playlist_id_or_url: str) -> dict[str, Any]:
         if not entry:
             continue
         video_id = entry.get("id")
-        if not video_id:
+        if not video_id or str(video_id).startswith("PL"):
             continue
 
         duration = entry.get("duration")
@@ -106,7 +110,7 @@ def fetch_playlist(playlist_id_or_url: str) -> dict[str, Any]:
 
         videos.append(
             {
-                "id": video_id,
+                "id": str(video_id),
                 "title": entry.get("title") or "",
                 "author": _normalize_author(
                     entry.get("uploader")
@@ -125,7 +129,10 @@ def fetch_playlist(playlist_id_or_url: str) -> dict[str, Any]:
     if not videos:
         raise ValueError("No videos found in playlist")
 
-    _enrich_upload_dates(videos)
+    # Upload-date enrichment is very slow (per-video yt-dlp calls).
+    # Keep it opt-in so playlist lists return in ~2s, not minutes.
+    if enrich_dates:
+        _enrich_upload_dates(videos)
 
     return {
         "id": playlist_id,
