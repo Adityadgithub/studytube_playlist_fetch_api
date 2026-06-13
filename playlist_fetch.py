@@ -12,15 +12,6 @@ def extract_playlist_id(playlist_id_or_url: str) -> str:
     return text
 
 
-def _format_upload_date(upload_date: Any) -> str | None:
-    if not upload_date:
-        return None
-    text = str(upload_date)
-    if len(text) == 8 and text.isdigit():
-        return f"{text[0:4]}-{text[4:6]}-{text[6:8]}"
-    return text
-
-
 def _normalize_author(name: str | None) -> str:
     if not name:
         return "Unknown"
@@ -38,15 +29,11 @@ def fetch_playlist(playlist_id_or_url: str) -> dict[str, Any]:
         else f"https://www.youtube.com/playlist?list={playlist_id}"
     )
 
-    # Full metadata in one call (includes upload_date). Slower than extract_flat.
     opts = {
         "quiet": True,
         "no_warnings": True,
+        "extract_flat": "in_playlist",
         "skip_download": True,
-        "socket_timeout": 15,
-        "ignoreerrors": True,
-        "ignore_no_formats_error": True,
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
 
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -65,9 +52,11 @@ def fetch_playlist(playlist_id_or_url: str) -> dict[str, Any]:
             continue
 
         duration = entry.get("duration")
-        upload_date = _format_upload_date(
-            entry.get("upload_date") or entry.get("release_date")
-        )
+        upload_date = entry.get("upload_date") or entry.get("release_date")
+        if upload_date and len(str(upload_date)) == 8:
+            # yt-dlp YYYYMMDD -> YYYY-MM-DD
+            d = str(upload_date)
+            upload_date = f"{d[0:4]}-{d[4:6]}-{d[6:8]}"
 
         videos.append(
             {
