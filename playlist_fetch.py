@@ -1,4 +1,5 @@
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import yt_dlp
@@ -10,6 +11,48 @@ def extract_playlist_id(playlist_id_or_url: str) -> str:
     if match:
         return match.group(1)
     return text
+
+
+def _format_upload_date(upload_date: Any) -> str | None:
+    if not upload_date:
+        return None
+    text = str(upload_date)
+    if len(text) == 8 and text.isdigit():
+        return f"{text[0:4]}-{text[4:6]}-{text[6:8]}"
+    return text
+
+
+def _fetch_video_upload_date(video_url: str) -> str | None:
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+        return _format_upload_date(
+            info.get("upload_date") or info.get("release_date")
+        )
+    except Exception:
+        return None
+
+
+def _enrich_upload_dates(videos: list[dict[str, Any]], max_workers: int = 6) -> None:
+    missing = [i for i, v in enumerate(videos) if not v.get("uploadDateRaw")]
+    if not missing:
+        return
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(_fetch_video_upload_date, videos[i]["url"]): i
+            for i in missing
+        }
+        for future in as_completed(futures):
+            idx = futures[future]
+            upload_date = future.result()
+            if upload_date:
+                videos[idx]["uploadDateRaw"] = upload_date
 
 
 def _normalize_author(name: str | None) -> str:
@@ -52,11 +95,9 @@ def fetch_playlist(playlist_id_or_url: str) -> dict[str, Any]:
             continue
 
         duration = entry.get("duration")
-        upload_date = entry.get("upload_date") or entry.get("release_date")
-        if upload_date and len(str(upload_date)) == 8:
-            # yt-dlp YYYYMMDD -> YYYY-MM-DD
-            d = str(upload_date)
-            upload_date = f"{d[0:4]}-{d[4:6]}-{d[6:8]}"
+        upload_date = _format_upload_date(
+            entry.get("upload_date") or entry.get("release_date")
+        )
 
         videos.append(
             {
@@ -78,6 +119,8 @@ def fetch_playlist(playlist_id_or_url: str) -> dict[str, Any]:
 
     if not videos:
         raise ValueError("No videos found in playlist")
+
+    _enrich_upload_dates(videos)
 
     return {
         "id": playlist_id,
