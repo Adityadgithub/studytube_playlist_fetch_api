@@ -7,8 +7,8 @@ from typing import Any
 import yt_dlp
 
 _CACHE_TTL_SEC = 15 * 60
-# channel ref -> (expires_at, cached payload with reversed video list)
-_OLDEST_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+# channel ref -> (expires_at, total video count)
+_COUNT_CACHE: dict[str, tuple[float, int]] = {}
 
 
 def _format_upload_date(upload_date: Any) -> str | None:
@@ -82,8 +82,12 @@ def channel_base_url(channel_ref: str) -> str:
     return f"https://www.youtube.com/channel/{ref}"
 
 
-def _channel_videos_url(channel: str) -> str:
-    return f"{channel_base_url(channel)}/videos"
+def _channel_videos_url(channel: str, *, sort: str = "newest") -> str:
+    base = channel_base_url(channel)
+    if sort == "oldest":
+        # YouTube "Date added (oldest)" — allows paged oldest-first like newest.
+        return f"{base}/videos?view=0&sort=da&flow=grid"
+    return f"{base}/videos"
 
 
 def _channel_search_url(channel: str, query: str) -> str:
@@ -146,21 +150,88 @@ def _total_from_info(info: dict[str, Any], fallback: int) -> int:
     return fallback
 
 
-def _cache_get_oldest(channel_ref: str) -> dict[str, Any] | None:
+def _cache_get_count(channel_ref: str) -> int | None:
     key = normalize_channel_ref(channel_ref)
-    entry = _OLDEST_CACHE.get(key)
+    entry = _COUNT_CACHE.get(key)
     if not entry:
         return None
-    expires_at, payload = entry
+    expires_at, total = entry
     if time.time() > expires_at:
-        _OLDEST_CACHE.pop(key, None)
+        _COUNT_CACHE.pop(key, None)
         return None
-    return payload
+    return total
 
 
-def _cache_set_oldest(channel_ref: str, payload: dict[str, Any]) -> None:
+def _cache_set_count(channel_ref: str, total: int) -> None:
     key = normalize_channel_ref(channel_ref)
-    _OLDEST_CACHE[key] = (time.time() + _CACHE_TTL_SEC, payload)
+    _COUNT_CACHE[key] = (time.time() + _CACHE_TTL_SEC, total)
+
+
+def _probe_total_count(channel: str, url: str) -> int:
+    cached = _cache_get_count(channel)
+    if cached is not None:
+        return cached
+
+    info = _extract_info(url, playlist_start=1, playlist_end=1)
+    _, _, _, videos = _extract_videos(info)
+    total = _total_from_info(info, len(videos))
+    if total > 0:
+        _cache_set_count(channel, total)
+    return total
+
+
+def _fetch_oldest_page(
+    channel: str,
+    *,
+    limit: int,
+    offset: int,
+) -> tuple[str, str, str, list[dict[str, Any]], int, bool]:
+    """Fetch one page of oldest videos without downloading the full channel."""
+    url_sorted = _channel_videos_url(channel, sort="oldest")
+    try:
+        info = _extract_info(
+            url_sorted,
+            playlist_start=offset + 1,
+            playlist_end=offset + limit,
+        )
+        channel_id, channel_name, channel_thumb, videos = _extract_videos(info)
+        if videos:
+            playlist_count_known = info.get("playlist_count") is not None
+            total = _total_from_info(info, offset + len(videos))
+            if playlist_count_known:
+                _cache_set_count(channel, total)
+            return (
+                channel_id,
+                channel_name,
+                channel_thumb,
+                videos,
+                total,
+                playlist_count_known,
+            )
+    except Exception as exc:
+        print(f"oldest sort=da page fetch failed: {exc}")
+
+    # Fallback: YouTube default order is newest-first — grab the tail slice only.
+    url_newest = _channel_videos_url(channel, sort="newest")
+    total = _probe_total_count(channel, url_newest)
+    if total <= 0:
+        raise ValueError("No videos found in channel")
+
+    end_pos = total - offset
+    start_pos = max(1, end_pos - limit + 1)
+    if end_pos < 1:
+        info = _extract_info(url_newest, playlist_start=1, playlist_end=1)
+        channel_id, channel_name, channel_thumb, _ = _extract_videos(info)
+        return channel_id, channel_name, channel_thumb, [], total, True
+
+    info = _extract_info(
+        url_newest,
+        playlist_start=start_pos,
+        playlist_end=end_pos,
+    )
+    channel_id, channel_name, channel_thumb, videos = _extract_videos(info)
+    videos.reverse()
+    return channel_id, channel_name, channel_thumb, videos, total, True
 
 
 def _fetch_video_details(video_url: str) -> dict[str, Any]:
@@ -305,10 +376,10 @@ def fetch_channel_videos(
     sort_key = "oldest" if sort == "oldest" else "newest"
     limit = max(1, min(int(limit), 50))
     offset = max(0, int(offset))
-    url = _channel_videos_url(channel)
     playlist_count_known = False
 
     if sort_key == "newest":
+        url = _channel_videos_url(channel, sort="newest")
         info = _extract_info(
             url,
             playlist_start=offset + 1,
@@ -318,34 +389,20 @@ def fetch_channel_videos(
         if not videos and offset == 0:
             raise ValueError("No videos found in channel")
         playlist_count_known = info.get("playlist_count") is not None
-        total_count = _total_from_info(info, page_end := offset + len(videos))
+        total_count = _total_from_info(info, offset + len(videos))
+        if playlist_count_known:
+            _cache_set_count(channel, total_count)
     else:
-        cached = _cache_get_oldest(channel)
-        if cached:
-            channel_id = cached["channelId"]
-            channel_name = cached["channelName"]
-            channel_thumb = cached["channelThumbnail"]
-            all_videos = cached["videos"]
-            total_count = len(all_videos)
-            playlist_count_known = True
-        else:
-            info = _extract_info(url)
-            channel_id, channel_name, channel_thumb, all_videos = _extract_videos(info)
-            if not all_videos:
-                raise ValueError("No videos found in channel")
-            all_videos.reverse()
-            total_count = _total_from_info(info, len(all_videos))
-            playlist_count_known = info.get("playlist_count") is not None
-            _cache_set_oldest(
-                channel,
-                {
-                    "channelId": channel_id,
-                    "channelName": channel_name,
-                    "channelThumbnail": channel_thumb,
-                    "videos": all_videos,
-                },
-            )
-        videos = all_videos[offset : offset + limit]
+        (
+            channel_id,
+            channel_name,
+            channel_thumb,
+            videos,
+            total_count,
+            playlist_count_known,
+        ) = _fetch_oldest_page(channel, limit=limit, offset=offset)
+        if not videos and offset == 0:
+            raise ValueError("No videos found in channel")
 
     if enrich and videos:
         _enrich_videos(videos)
