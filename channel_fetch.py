@@ -470,6 +470,38 @@ def fetch_channel_videos(
     )
 
 
+def enrich_video_details(video_ids: list[str]) -> dict[str, Any]:
+    """Fetch views, description, and dates for specific video IDs (background enrichment)."""
+    ids = [vid.strip() for vid in video_ids if vid and str(vid).strip()]
+    if not ids:
+        raise ValueError("At least one video id is required")
+    if len(ids) > 50:
+        raise ValueError("Maximum 50 video ids per request")
+
+    stubs = [
+        {
+            "id": vid,
+            "url": f"https://www.youtube.com/watch?v={vid}",
+        }
+        for vid in ids
+    ]
+    _enrich_videos(stubs)
+
+    return {
+        "videoCount": len(stubs),
+        "videos": [
+            {
+                "id": item["id"],
+                "viewCount": item.get("viewCount"),
+                "viewsText": item.get("viewsText") or "",
+                "uploadDateRaw": item.get("uploadDateRaw"),
+                "description": item.get("description") or "",
+            }
+            for item in stubs
+        ],
+    }
+
+
 def search_channel_videos(
     channel: str,
     query: str,

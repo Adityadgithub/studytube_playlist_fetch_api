@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from playlist_fetch import fetch_playlist
 from comments_fetch import fetch_comments
-from channel_fetch import fetch_channel_videos, search_channel_videos
+from channel_fetch import fetch_channel_videos, search_channel_videos, enrich_video_details
 
 API_KEY = os.getenv("PLAYLIST_API_KEY", "").strip()
 
@@ -152,6 +152,25 @@ def get_channel_videos_by_query(
             offset=offset,
             enrich=enrich,
         )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/videos/details")
+def get_video_details(
+    ids: str = Query(..., description="Comma-separated YouTube video IDs (max 50)"),
+    x_api_key: str | None = Header(default=None),
+):
+    _check_api_key(x_api_key)
+    video_ids = [part.strip() for part in ids.split(",") if part.strip()]
+    if not video_ids:
+        raise HTTPException(status_code=400, detail="ids query param is required")
+    if len(video_ids) > 50:
+        raise HTTPException(status_code=400, detail="Maximum 50 video ids per request")
+    try:
+        return enrich_video_details(video_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
