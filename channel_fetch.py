@@ -9,6 +9,8 @@ import yt_dlp
 _CACHE_TTL_SEC = 15 * 60
 # channel ref -> (expires_at, total video count)
 _COUNT_CACHE: dict[str, tuple[float, int]] = {}
+# channel ref -> (expires_at, reversed video list) — fallback when tail slice fails
+_OLDEST_LIST_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def _format_upload_date(upload_date: Any) -> str | None:
@@ -82,12 +84,8 @@ def channel_base_url(channel_ref: str) -> str:
     return f"https://www.youtube.com/channel/{ref}"
 
 
-def _channel_videos_url(channel: str, *, sort: str = "newest") -> str:
-    base = channel_base_url(channel)
-    if sort == "oldest":
-        # YouTube "Date added (oldest)" — allows paged oldest-first like newest.
-        return f"{base}/videos?view=0&sort=da&flow=grid"
-    return f"{base}/videos"
+def _channel_videos_url(channel: str) -> str:
+    return f"{channel_base_url(channel)}/videos"
 
 
 def _channel_search_url(channel: str, query: str) -> str:
@@ -99,6 +97,7 @@ def _ydl_opts(
     *,
     playlist_start: int | None = None,
     playlist_end: int | None = None,
+    playlist_items: str | None = None,
 ) -> dict[str, Any]:
     opts: dict[str, Any] = {
         "quiet": True,
@@ -108,10 +107,13 @@ def _ydl_opts(
         "ignore_no_formats_error": True,
         "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
-    if playlist_start is not None and playlist_start > 0:
-        opts["playliststart"] = playlist_start
-    if playlist_end is not None and playlist_end > 0:
-        opts["playlistend"] = playlist_end
+    if playlist_items:
+        opts["playlist_items"] = playlist_items
+    else:
+        if playlist_start is not None and playlist_start > 0:
+            opts["playliststart"] = playlist_start
+        if playlist_end is not None and playlist_end > 0:
+            opts["playlistend"] = playlist_end
     return opts
 
 
@@ -130,9 +132,14 @@ def _extract_info(
     *,
     playlist_start: int | None = None,
     playlist_end: int | None = None,
+    playlist_items: str | None = None,
 ) -> dict[str, Any]:
     with yt_dlp.YoutubeDL(
-        _ydl_opts(playlist_start=playlist_start, playlist_end=playlist_end)
+        _ydl_opts(
+            playlist_start=playlist_start,
+            playlist_end=playlist_end,
+            playlist_items=playlist_items,
+        )
     ) as ydl:
         info = ydl.extract_info(url, download=False)
     if not info:
@@ -167,17 +174,69 @@ def _cache_set_count(channel_ref: str, total: int) -> None:
     _COUNT_CACHE[key] = (time.time() + _CACHE_TTL_SEC, total)
 
 
-def _probe_total_count(channel: str, url: str) -> int:
-    cached = _cache_get_count(channel)
-    if cached is not None:
-        return cached
+def _cache_get_oldest_list(channel_ref: str) -> dict[str, Any] | None:
+    key = normalize_channel_ref(channel_ref)
+    entry = _OLDEST_LIST_CACHE.get(key)
+    if not entry:
+        return None
+    expires_at, payload = entry
+    if time.time() > expires_at:
+        _OLDEST_LIST_CACHE.pop(key, None)
+        return None
+    return payload
 
-    info = _extract_info(url, playlist_start=1, playlist_end=1)
-    _, _, _, videos = _extract_videos(info)
-    total = _total_from_info(info, len(videos))
-    if total > 0:
-        _cache_set_count(channel, total)
-    return total
+
+def _cache_set_oldest_list(channel_ref: str, payload: dict[str, Any]) -> None:
+    key = normalize_channel_ref(channel_ref)
+    _OLDEST_LIST_CACHE[key] = (time.time() + _CACHE_TTL_SEC, payload)
+
+
+def _playlist_items_for_oldest(offset: int, limit: int) -> str:
+    """yt-dlp negative indices: last N entries from the channel (the oldest videos)."""
+    far = offset + limit
+    near = offset + 1
+    if near <= 1:
+        return f"-{far}:"
+    return f"-{far}:-{near}"
+
+
+def _fetch_oldest_from_full_list(
+    channel: str,
+    *,
+    limit: int,
+    offset: int,
+) -> tuple[str, str, str, list[dict[str, Any]], int, bool]:
+    cached = _cache_get_oldest_list(channel)
+    if cached:
+        all_videos = cached["videos"]
+    else:
+        url = _channel_videos_url(channel)
+        info = _extract_info(url)
+        channel_id, channel_name, channel_thumb, all_videos = _extract_videos(info)
+        if not all_videos:
+            raise ValueError("No videos found in channel")
+        all_videos.reverse()
+        _cache_set_oldest_list(
+            channel,
+            {
+                "channelId": channel_id,
+                "channelName": channel_name,
+                "channelThumbnail": channel_thumb,
+                "videos": all_videos,
+            },
+        )
+        cached = _cache_get_oldest_list(channel)
+        assert cached is not None
+
+    all_videos = cached["videos"]
+    return (
+        cached["channelId"],
+        cached["channelName"],
+        cached["channelThumbnail"],
+        all_videos[offset : offset + limit],
+        len(all_videos),
+        True,
+    )
 
 
 def _fetch_oldest_page(
@@ -186,16 +245,26 @@ def _fetch_oldest_page(
     limit: int,
     offset: int,
 ) -> tuple[str, str, str, list[dict[str, Any]], int, bool]:
-    """Fetch one page of oldest videos without downloading the full channel."""
-    url_sorted = _channel_videos_url(channel, sort="oldest")
+    """Fetch oldest videos: tail slice via yt-dlp negative indices, else full-list cache."""
+    url = _channel_videos_url(channel)
+    items = _playlist_items_for_oldest(offset, limit)
+
     try:
-        info = _extract_info(
-            url_sorted,
-            playlist_start=offset + 1,
-            playlist_end=offset + limit,
-        )
+        info = _extract_info(url, playlist_items=items)
         channel_id, channel_name, channel_thumb, videos = _extract_videos(info)
         if videos:
+            videos.reverse()
+            if offset == 0:
+                probe = _extract_info(url, playlist_start=1, playlist_end=1)
+                _, _, _, newest_head = _extract_videos(probe)
+                if newest_head and videos[0]["id"] == newest_head[0]["id"]:
+                    print(
+                        "oldest tail-slice matched newest head; "
+                        "using full-list cache"
+                    )
+                    return _fetch_oldest_from_full_list(
+                        channel, limit=limit, offset=offset
+                    )
             playlist_count_known = info.get("playlist_count") is not None
             total = _total_from_info(info, offset + len(videos))
             if playlist_count_known:
@@ -209,29 +278,9 @@ def _fetch_oldest_page(
                 playlist_count_known,
             )
     except Exception as exc:
-        print(f"oldest sort=da page fetch failed: {exc}")
+        print(f"oldest tail-slice fetch failed: {exc}")
 
-    # Fallback: YouTube default order is newest-first — grab the tail slice only.
-    url_newest = _channel_videos_url(channel, sort="newest")
-    total = _probe_total_count(channel, url_newest)
-    if total <= 0:
-        raise ValueError("No videos found in channel")
-
-    end_pos = total - offset
-    start_pos = max(1, end_pos - limit + 1)
-    if end_pos < 1:
-        info = _extract_info(url_newest, playlist_start=1, playlist_end=1)
-        channel_id, channel_name, channel_thumb, _ = _extract_videos(info)
-        return channel_id, channel_name, channel_thumb, [], total, True
-
-    info = _extract_info(
-        url_newest,
-        playlist_start=start_pos,
-        playlist_end=end_pos,
-    )
-    channel_id, channel_name, channel_thumb, videos = _extract_videos(info)
-    videos.reverse()
-    return channel_id, channel_name, channel_thumb, videos, total, True
+    return _fetch_oldest_from_full_list(channel, limit=limit, offset=offset)
 
 
 def _fetch_video_details(video_url: str) -> dict[str, Any]:
@@ -379,7 +428,7 @@ def fetch_channel_videos(
     playlist_count_known = False
 
     if sort_key == "newest":
-        url = _channel_videos_url(channel, sort="newest")
+        url = _channel_videos_url(channel)
         info = _extract_info(
             url,
             playlist_start=offset + 1,
