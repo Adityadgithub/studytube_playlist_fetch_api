@@ -5,13 +5,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from playlist_fetch import fetch_playlist
 from comments_fetch import fetch_comments
+from channel_fetch import fetch_channel_videos, search_channel_videos
 
 API_KEY = os.getenv("PLAYLIST_API_KEY", "").strip()
 
 app = FastAPI(
     title="StudyTube YouTube API",
-    description="YouTube playlist and video comments via yt-dlp.",
-    version="1.1.0",
+    description="YouTube playlist, channel videos, and video comments via yt-dlp.",
+    version="1.2.0",
 )
 
 app.add_middleware(
@@ -91,6 +92,56 @@ def get_comments_by_id(
             sort=sort,
             max_comments=max,
         )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/channel/{channel_ref}/videos")
+def get_channel_videos(
+    channel_ref: str,
+    sort: str = Query(
+        "newest",
+        description="Video order: newest or oldest",
+    ),
+    x_api_key: str | None = Header(default=None),
+):
+    _check_api_key(x_api_key)
+    if sort not in {"newest", "oldest"}:
+        raise HTTPException(status_code=400, detail="sort must be newest or oldest")
+    try:
+        return fetch_channel_videos(channel_ref, sort=sort)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/channel/videos")
+def get_channel_videos_by_query(
+    channel: str = Query(..., description="Channel id, @handle, or channel URL"),
+    sort: str = Query(
+        "newest",
+        description="Video order: newest or oldest",
+    ),
+    x_api_key: str | None = Header(default=None),
+):
+    _check_api_key(x_api_key)
+    if sort not in {"newest", "oldest"}:
+        raise HTTPException(status_code=400, detail="sort must be newest or oldest")
+    try:
+        return fetch_channel_videos(channel, sort=sort)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/channel/search")
+def get_channel_search(
+    channel: str = Query(..., description="Channel id, @handle, or channel URL"),
+    q: str = Query(..., description="Search query within the channel"),
+    limit: int = Query(50, ge=1, le=200, description="Max videos to return"),
+    x_api_key: str | None = Header(default=None),
+):
+    _check_api_key(x_api_key)
+    try:
+        return search_channel_videos(channel, q, limit=limit)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
