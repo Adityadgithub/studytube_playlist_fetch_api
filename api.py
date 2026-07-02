@@ -103,13 +103,17 @@ def get_channel_videos(
         "newest",
         description="Video order: newest or oldest",
     ),
+    enrich: bool = Query(
+        False,
+        description="Fetch views, description, and exact dates per video (slow)",
+    ),
     x_api_key: str | None = Header(default=None),
 ):
     _check_api_key(x_api_key)
     if sort not in {"newest", "oldest"}:
         raise HTTPException(status_code=400, detail="sort must be newest or oldest")
     try:
-        return fetch_channel_videos(channel_ref, sort=sort)
+        return fetch_channel_videos(channel_ref, sort=sort, enrich=enrich)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -121,13 +125,17 @@ def get_channel_videos_by_query(
         "newest",
         description="Video order: newest or oldest",
     ),
+    enrich: bool = Query(
+        False,
+        description="Fetch views, description, and exact dates per video (slow)",
+    ),
     x_api_key: str | None = Header(default=None),
 ):
     _check_api_key(x_api_key)
     if sort not in {"newest", "oldest"}:
         raise HTTPException(status_code=400, detail="sort must be newest or oldest")
     try:
-        return fetch_channel_videos(channel, sort=sort)
+        return fetch_channel_videos(channel, sort=sort, enrich=enrich)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

@@ -204,7 +204,12 @@ def _extract_videos(info: dict[str, Any]) -> tuple[str, str, str, list[dict[str,
     return channel_id, channel_author, channel_thumb, videos
 
 
-def fetch_channel_videos(channel: str, *, sort: str = "newest") -> dict[str, Any]:
+def fetch_channel_videos(
+    channel: str,
+    *,
+    sort: str = "newest",
+    enrich: bool = False,
+) -> dict[str, Any]:
     sort_key = "oldest" if sort == "oldest" else "newest"
     url = _channel_videos_url(channel)
 
@@ -215,13 +220,15 @@ def fetch_channel_videos(channel: str, *, sort: str = "newest") -> dict[str, Any
     if not videos:
         raise ValueError("No videos found in channel")
 
-    # YouTube lists newest first; reverse gives a fast oldest-first approximation
-    # before per-video enrichment (same approach as test.py get_videos_flat).
+    # YouTube lists newest first; reverse gives a fast oldest-first order
+    # (same approach as test.py get_videos_flat).
     if sort_key == "oldest":
         videos.reverse()
 
-    _enrich_videos(videos)
-    _sort_videos_by_date(videos, sort=sort_key)
+    # Per-video yt-dlp calls are very slow on large channels — keep opt-in.
+    if enrich:
+        _enrich_videos(videos)
+        _sort_videos_by_date(videos, sort=sort_key)
 
     return {
         "channelId": channel_id,
