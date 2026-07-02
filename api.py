@@ -103,6 +103,8 @@ def get_channel_videos(
         "newest",
         description="Video order: newest or oldest",
     ),
+    limit: int = Query(30, ge=1, le=50, description="Videos per page"),
+    offset: int = Query(0, ge=0, description="Number of videos to skip"),
     enrich: bool = Query(
         False,
         description="Fetch views, description, and exact dates per video (slow)",
@@ -113,7 +115,13 @@ def get_channel_videos(
     if sort not in {"newest", "oldest"}:
         raise HTTPException(status_code=400, detail="sort must be newest or oldest")
     try:
-        return fetch_channel_videos(channel_ref, sort=sort, enrich=enrich)
+        return fetch_channel_videos(
+            channel_ref,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+            enrich=enrich,
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -125,6 +133,8 @@ def get_channel_videos_by_query(
         "newest",
         description="Video order: newest or oldest",
     ),
+    limit: int = Query(30, ge=1, le=50, description="Videos per page"),
+    offset: int = Query(0, ge=0, description="Number of videos to skip"),
     enrich: bool = Query(
         False,
         description="Fetch views, description, and exact dates per video (slow)",
@@ -135,7 +145,13 @@ def get_channel_videos_by_query(
     if sort not in {"newest", "oldest"}:
         raise HTTPException(status_code=400, detail="sort must be newest or oldest")
     try:
-        return fetch_channel_videos(channel, sort=sort, enrich=enrich)
+        return fetch_channel_videos(
+            channel,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+            enrich=enrich,
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

@@ -6,17 +6,25 @@ CHANNEL = "UC_x5XG1OV2P6uZZ5FSM9Ttw"  # Google Developers
 QUERY = "flutter"
 
 
-def test_fetch_newest():
-    data = fetch_channel_videos(CHANNEL, sort="newest")
+def test_fetch_newest_page():
+    data = fetch_channel_videos(CHANNEL, sort="newest", limit=10, offset=0)
     assert data["videoCount"] > 0
     assert data["videos"][0]["title"]
-    print(f"newest: {data['videoCount']} videos, first={data['videos'][0]['title'][:40]}")
+    assert data["limit"] == 10
+    assert data["offset"] == 0
+    print(
+        f"newest page: {data['videoCount']} videos, "
+        f"total={data['totalCount']}, hasMore={data['hasMore']}"
+    )
 
 
-def test_fetch_oldest():
-    data = fetch_channel_videos(CHANNEL, sort="oldest")
+def test_fetch_oldest_page():
+    data = fetch_channel_videos(CHANNEL, sort="oldest", limit=10, offset=0)
     assert data["videoCount"] > 0
-    print(f"oldest: {data['videoCount']} videos")
+    print(
+        f"oldest page: {data['videoCount']} videos, "
+        f"total={data['totalCount']}, hasMore={data['hasMore']}"
+    )
 
 
 def test_search_in_channel():
@@ -26,7 +34,7 @@ def test_search_in_channel():
 
 
 if __name__ == "__main__":
-    test_fetch_newest()
-    test_fetch_oldest()
+    test_fetch_newest_page()
+    test_fetch_oldest_page()
     test_search_in_channel()
     print("ok")
